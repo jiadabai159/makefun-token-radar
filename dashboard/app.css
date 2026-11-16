@@ -74,6 +74,12 @@ tbody tr[data-selected="true"] { background: var(--panel-2); box-shadow: inset 3
 th button { background: none; border: 0; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; padding: 0; }
 .model { padding: 18px 20px; }
 .model h2 { margin: 0 0 6px; font-size: 18px; }
+.model h3 { margin: 18px 0 4px; font-size: 15px; }
+.checks { list-style: none; margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 22px; }
+.checks li { font-size: 13px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+.checks li b { color: var(--text); }
+.checks li.check-pass b { color: var(--green); }
+.checks li.check-fail b { color: var(--red); }
 .model p { color: var(--muted); }
 .formula { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; white-space: nowrap; margin: 12px 0; }
 .factors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 22px; margin: 0; }
@@ -104,6 +110,7 @@ th button { background: none; border: 0; color: inherit; font: inherit; text-tra
 @media (max-width: 760px) {
   .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .factors { grid-template-columns: 1fr; }
+  .checks { grid-template-columns: 1fr; }
   .equation { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .count { margin-left: 0; }
   .lede h1 { font-size: 22px; }

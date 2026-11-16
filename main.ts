@@ -16,7 +16,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { auditBoard, boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -47,6 +47,17 @@ const { board, radar } = buildRadar(snapshot);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
+  process.exit(1);
+}
+
+// The model's own self-check, before anything is written: recompute every row and check
+// the ranks, the order, the watchlist, the farm plans and the readiness range. A board
+// that fails here is not handed in, and the failure names the check that caught it.
+const audit = auditBoard(board, snapshot);
+if (!audit.passed) {
+  for (const c of audit.checks.filter((c) => !c.passed)) {
+    process.stderr.write(`token radar: model self-check failed: ${c.name}: ${c.detail}\n`);
+  }
   process.exit(1);
 }
 
@@ -90,5 +101,6 @@ writeFileSync(
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} beyond the watchlist, ${radar.live_size} live set aside)\n` +
+    `token radar: model self-check: ${audit.checks.length}/${audit.checks.length} checks passed (recompute, ranks, order, watchlist, farm-plans, readiness, spread)\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );

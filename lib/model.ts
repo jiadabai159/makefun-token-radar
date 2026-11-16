@@ -599,6 +599,128 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
   return null;
 }
 
+/** One self-check of the board: its name, whether it passed, and what it found. */
+export interface AuditCheck {
+  name: string;
+  passed: boolean;
+  detail: string;
+}
+
+/** The board's whole self-check: every check, and whether they all passed. */
+export interface BoardAudit {
+  passed: boolean;
+  checks: AuditCheck[];
+}
+
+/**
+ * The model's self-check, run by main.ts before anything is written and by the dashboard
+ * in the reader's browser: recompute every row from the snapshot's own figures, and check
+ * the ranks, the order, the watchlist, the farm plans and the readiness range. A board
+ * that fails any of these is not handed in, and a dashboard that fails any of them says
+ * so on the page instead of silently showing a stale table.
+ */
+export function auditBoard(board: BoardRow[], snapshot: Snapshot, model: ModelConstants = MODEL): BoardAudit {
+  const index = bySlug(snapshot.protocols);
+  const checks: AuditCheck[] = [];
+
+  let mismatches = 0;
+  let missing = 0;
+  for (const row of board) {
+    const p = index.get(row.slug);
+    if (p === undefined) {
+      missing += 1;
+      continue;
+    }
+    if (impliedValue(p, snapshot.as_of, model).implied !== row.implied_value_usd) mismatches += 1;
+  }
+  checks.push({
+    name: 'recompute',
+    passed: mismatches === 0 && missing === 0,
+    detail: `${board.length - mismatches - missing} of ${board.length} rows recompute to the implied value board.json carries`,
+  });
+
+  let ranksOk = board.length > 0;
+  for (let i = 0; i < board.length; i++) {
+    if (board[i]!.rank !== i + 1) {
+      ranksOk = false;
+      break;
+    }
+  }
+  checks.push({
+    name: 'ranks',
+    passed: ranksOk,
+    detail: ranksOk ? `ranks run 1 to ${board.length} with no gap and no repeat` : 'ranks are not 1..n in order',
+  });
+
+  let ordered = true;
+  for (let i = 1; i < board.length; i++) {
+    if (board[i]!.implied_value_usd > board[i - 1]!.implied_value_usd) {
+      ordered = false;
+      break;
+    }
+  }
+  checks.push({
+    name: 'order',
+    passed: ordered,
+    detail: ordered ? 'implied value never rises going down the board' : 'a lower row outranks the row above it on implied value',
+  });
+
+  const slugs = new Set(board.map((r) => r.slug));
+  const absent = snapshot.watchlist.filter((s) => !slugs.has(s));
+  checks.push({
+    name: 'watchlist',
+    passed: absent.length === 0,
+    detail:
+      absent.length === 0
+        ? `all ${snapshot.watchlist.length} watchlist protocols are on the board`
+        : `${absent.length} watchlist slugs are missing: ${absent.slice(0, 5).join(', ')}`,
+  });
+
+  let badPlans = 0;
+  for (const row of board) {
+    if (row.farm_steps.length < 3 || row.farm_steps.length > 12) {
+      badPlans += 1;
+      continue;
+    }
+    for (const s of row.farm_steps) {
+      if (s.length < 20 || s.length > 600) {
+        badPlans += 1;
+        break;
+      }
+    }
+  }
+  checks.push({
+    name: 'farm-plans',
+    passed: badPlans === 0,
+    detail:
+      badPlans === 0
+        ? 'every row carries 3 to 12 farm steps of 20 to 600 characters'
+        : `${badPlans} rows carry a farm plan outside 3 to 12 steps of 20 to 600 characters`,
+  });
+
+  let badReadiness = 0;
+  for (const row of board) {
+    if (!Number.isFinite(row.readiness) || row.readiness < 0 || row.readiness > 100) badReadiness += 1;
+  }
+  checks.push({
+    name: 'readiness',
+    passed: badReadiness === 0,
+    detail: badReadiness === 0 ? 'every readiness score sits between 0 and 100' : `${badReadiness} rows carry a readiness outside 0 to 100`,
+  });
+
+  const distinct = new Set(board.map((r) => r.implied_value_usd)).size;
+  checks.push({
+    name: 'spread',
+    passed: board.length < 2 || distinct > 1,
+    detail:
+      distinct > 1
+        ? `${distinct} distinct implied values across ${board.length} rows`
+        : 'every row shares one implied value: the board ranks nothing',
+  });
+
+  return { passed: checks.every((c) => c.passed), checks };
+}
+
 /** A compact data.js: the dashboard's whole dataset as one script, no fetch and no network. */
 export function dataScript(radar: RadarData): string {
   return `window.RADAR=${JSON.stringify(radar)};\n`;

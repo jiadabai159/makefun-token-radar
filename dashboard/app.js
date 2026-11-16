@@ -9,7 +9,7 @@
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', wl: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  var state = { q: '', category: 'all', chain: 'all', readiness: 'all', wl: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
@@ -135,6 +135,94 @@
     ].map(stepText);
   }
 
+  // CSV export: the view the reader sees — the filtered, sorted board, or the live
+  // set — as a spreadsheet file, built in the page from the same data.js the table
+  // renders, so the download can never disagree with what is on screen. One cell is
+  // quoted the RFC 4180 way when it holds a comma, a quote or a line break, and chains
+  // join with a semicolon so a chain list never splits a row.
+  function csvCell(value) {
+    var s = value === null || value === undefined ? '' : String(value);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  function boardCsv(list) {
+    var lines = ['rank,name,category,chains,tvl_usd,change_7d_pct,age_days,readiness,implied_value_usd,value_per_tvl'];
+    list.forEach(function (r) {
+      lines.push([
+        r.rank, r.name, r.category || '', (r.chains || []).join(';'), r.tvl_usd,
+        r.change_7d === null ? '' : r.change_7d, r.age_days === null ? '' : r.age_days,
+        r.readiness, r.implied_value_usd, (r.implied_value_usd / r.tvl_usd).toFixed(4)
+      ].map(csvCell).join(','));
+    });
+    return lines.join('\r\n') + '\r\n';
+  }
+  function liveCsv() {
+    var lines = ['name,category,chains,tvl_usd,mcap_usd,change_7d_pct'];
+    DATA.live.forEach(function (r) {
+      lines.push([
+        r.name, r.category || '', (r.chains || []).join(';'), r.tvl_usd,
+        r.mcap_usd === null ? '' : r.mcap_usd, r.change_7d === null ? '' : r.change_7d
+      ].map(csvCell).join(','));
+    });
+    return lines.join('\r\n') + '\r\n';
+  }
+  function downloadCsv() {
+    var text = state.tab === 'live' ? liveCsv() : boardCsv(sortedRows(rows()));
+    var name = state.tab === 'live' ? 'token-radar-live.csv' : 'token-radar-board.csv';
+    var blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  // The model's self-check, run in the reader's browser from the same snapshot
+  // figures the board was built from: recompute every row and compare it with the
+  // number board.json carries, then check the ranks, the order, the watchlist, the
+  // farm plans and the readiness range. It is the same audit main.ts runs before
+  // writing the output, so a stale or tampered data.js shows up here as a failed
+  // check instead of a table that looks fine.
+  function auditBoard() {
+    var checks = [];
+    var mismatches = 0;
+    DATA.rows.forEach(function (r) {
+      if (impliedOf(r, DATA.model) !== r.implied_value_usd) mismatches += 1;
+    });
+    checks.push({ name: 'Recompute', passed: mismatches === 0, detail: (DATA.rows.length - mismatches) + ' of ' + DATA.rows.length + ' rows recompute to the same implied value' });
+    var ranksOk = DATA.rows.length > 0;
+    DATA.rows.forEach(function (r, i) { if (r.rank !== i + 1) ranksOk = false; });
+    checks.push({ name: 'Ranks', passed: ranksOk, detail: ranksOk ? 'ranks run 1 to ' + DATA.rows.length + ' with no gap and no repeat' : 'ranks are not 1..n in order' });
+    var ordered = true;
+    for (var i = 1; i < DATA.rows.length; i++) {
+      if (DATA.rows[i].implied_value_usd > DATA.rows[i - 1].implied_value_usd) { ordered = false; break; }
+    }
+    checks.push({ name: 'Order', passed: ordered, detail: ordered ? 'implied value never rises going down the board' : 'a lower row outranks the row above it on implied value' });
+    var absent = (DATA.watchlist || []).filter(function (s) {
+      return DATA.rows.filter(function (r) { return r.slug === s; }).length === 0;
+    });
+    checks.push({ name: 'Watchlist', passed: absent.length === 0, detail: absent.length === 0 ? 'all ' + DATA.watchlist.length + ' watchlist protocols are on the board' : absent.length + ' watchlist slugs are missing' });
+    var badPlans = 0;
+    DATA.rows.forEach(function (r) {
+      var steps = farmSteps(r);
+      if (steps.length < 3 || steps.length > 12) { badPlans += 1; return; }
+      for (var j = 0; j < steps.length; j++) {
+        if (steps[j].length < 20 || steps[j].length > 600) { badPlans += 1; break; }
+      }
+    });
+    checks.push({ name: 'Farm plans', passed: badPlans === 0, detail: badPlans === 0 ? 'every row carries 3 to 12 farm steps of 20 to 600 characters' : badPlans + ' rows carry a farm plan outside 3 to 12 steps of 20 to 600 characters' });
+    var badReady = 0;
+    DATA.rows.forEach(function (r) { if (!isFinite(r.readiness) || r.readiness < 0 || r.readiness > 100) badReady += 1; });
+    checks.push({ name: 'Readiness', passed: badReady === 0, detail: badReady === 0 ? 'every readiness score sits between 0 and 100' : badReady + ' rows carry a readiness outside 0 to 100' });
+    var distinct = {};
+    DATA.rows.forEach(function (r) { distinct[r.implied_value_usd] = true; });
+    var distinctCount = Object.keys(distinct).length;
+    checks.push({ name: 'Spread', passed: DATA.rows.length < 2 || distinctCount > 1, detail: distinctCount > 1 ? distinctCount + ' distinct implied values across ' + DATA.rows.length + ' rows' : 'every row shares one implied value: the board ranks nothing' });
+    return checks;
+  }
+
   // The watchlist is the house's own list of slugs, carried in data.js; the board ranks it
   // plus every other rankable pre-token protocol. This set drives the watchlist-only filter.
   var WATCH_SET = new Set(DATA.watchlist || []);
@@ -147,6 +235,7 @@
     if (params.get('p')) state.selected = params.get('p');
     if (params.get('category')) state.category = params.get('category');
     if (params.get('chain')) state.chain = params.get('chain');
+    if (params.get('rdy')) state.readiness = params.get('rdy');
     if (params.get('wl') === '1') state.wl = true;
     if (params.get('tab')) state.tab = params.get('tab');
   }
@@ -155,6 +244,7 @@
     if (state.q) params.set('q', state.q);
     if (state.category !== 'all') params.set('category', state.category);
     if (state.chain !== 'all') params.set('chain', state.chain);
+    if (state.readiness !== 'all') params.set('rdy', state.readiness);
     if (state.wl) params.set('wl', '1');
     if (state.tab !== 'pre-token') params.set('tab', state.tab);
     if (state.selected) params.set('p', state.selected);
@@ -169,6 +259,7 @@
       if (state.wl && !WATCH_SET.has(r.slug)) return false;
       if (state.category !== 'all' && r.category !== state.category) return false;
       if (state.chain !== 'all' && !(r.chains || []).includes(state.chain)) return false;
+      if (state.readiness !== 'all' && r.readiness < Number(state.readiness)) return false;
       if (!q) return true;
       var hay = [r.name, r.slug, r.category, (r.chains || []).join(' ')].join(' ').toLowerCase();
       return hay.indexOf(q) >= 0;
@@ -183,6 +274,7 @@
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
       else if (key === 'readiness') { av = a.readiness; bv = b.readiness; }
+      else if (key === 'efficiency') { av = a.implied_value_usd / a.tvl_usd; bv = b.implied_value_usd / b.tvl_usd; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -231,6 +323,13 @@
       chains.map(function (c) { return el('option', { value: c, text: c, selected: c === state.chain ? 'selected' : null }); })
     );
     ch.addEventListener('change', function () { state.chain = ch.value; writeHash(); render(); });
+    var rdyOptions = [['all', 'Any readiness'], ['70', 'Ready 70+'], ['60', 'Ready 60+'], ['50', 'Ready 50+'], ['40', 'Ready 40+']];
+    var rdy = el('select', { id: 'readiness', 'aria-label': 'Filter by readiness' },
+      rdyOptions.map(function (o) { return el('option', { value: o[0], text: o[1], selected: o[0] === state.readiness ? 'selected' : null }); })
+    );
+    rdy.addEventListener('change', function () { state.readiness = rdy.value; writeHash(); render(); });
+    var csvCount = state.tab === 'pre-token' ? rows().length : DATA.live.length;
+    var csv = el('button', { class: 'button', type: 'button', text: 'Download CSV (' + csvCount + ' rows)', onclick: downloadCsv });
     var wl = el('input', { type: 'checkbox', id: 'wl', checked: state.wl ? 'checked' : null });
     wl.addEventListener('change', function () { state.wl = wl.checked; writeHash(); render(); });
     var pre = el('button', { type: 'button', 'aria-pressed': state.tab === 'pre-token' ? 'true' : 'false', text: 'Pre-token', onclick: function () { state.tab = 'pre-token'; render(); } });
@@ -239,8 +338,10 @@
       el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
       el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), cat),
       el('div', { class: 'field' }, el('label', { for: 'chain', text: 'Chain' }), ch),
+      el('div', { class: 'field' }, el('label', { for: 'readiness', text: 'Readiness' }), rdy),
       el('label', { class: 'check', for: 'wl' }, wl, 'Watchlist only'),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
+      csv,
       el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
     );
   }
@@ -260,7 +361,7 @@
       return el('div', { class: 'panel' }, el('div', { class: 'empty' },
         el('h2', { text: 'No protocol matches that filter' }),
         el('p', { text: 'Clear the search or pick another category to see the board again.' }),
-        el('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; state.wl = false; writeHash(); render(); } })
+        el('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; state.readiness = 'all'; state.wl = false; writeHash(); render(); } })
       ));
     }
     var max = 1;
@@ -288,6 +389,7 @@
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
+        el('td', { class: 'num', text: (r.implied_value_usd / r.tvl_usd).toFixed(2) + 'x' }),
         el('td', null, el('span', { class: 'status', text: 'no token' }))
       );
       tbody.appendChild(tr);
@@ -304,6 +406,7 @@
             sortHeader('age', 'Age'),
             sortHeader('readiness', 'Ready'),
             sortHeader('implied', 'Implied value'),
+            sortHeader('efficiency', 'Value / $ TVL'),
             el('th', { scope: 'col', text: 'Token' })
           )),
           tbody
@@ -337,6 +440,8 @@
 
   function modelPanel() {
     var m = DATA.model;
+    var audit = auditBoard();
+    var passed = audit.filter(function (c) { return c.passed; }).length;
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
@@ -351,6 +456,11 @@
         el('div', null, el('b', { text: 'Momentum. ' }), 'Under a year old and growing over 20% in 7 days: 1.05x, fresh momentum.'),
         el('div', null, el('b', { text: 'Readiness. ' }), 'Display only, 0-100: half maturity, three tenths growth, two tenths breadth.')
       ),
+      el('h3', { text: 'Model self-check' }),
+      el('p', { class: 'sub', text: 'Recomputed here in your browser from the same snapshot figures the board was built from: ' + passed + ' of ' + audit.length + ' checks passed. A failed check means the data on this page is stale, not the model.' }),
+      el('ul', { class: 'checks' }, audit.map(function (c) {
+        return el('li', { class: c.passed ? 'check-pass' : 'check-fail' }, el('b', { text: (c.passed ? 'Pass' : 'Fail') + ': ' + c.name + ' — ' }), c.detail);
+      })),
       el('p', { class: 'sub', text: 'Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every pre-token protocol the watchlist left out, by the same function, and the live-token protocols are set aside with their market caps shown.' })
     );
   }

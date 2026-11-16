@@ -12,7 +12,9 @@ Token Radar (radar-2) is a token launch radar for make.fun's "Build the best tok
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input <path to snapshot.json>
 ```
 
-`main.ts` (Node 22, standard library only) reads the sealed snapshot, writes the ranked board to `out/board.json`, the dashboard data to `out/data.js`, and copies `dashboard/` and `screenshots/` to `out/` with `out/dossier.json`. Open `out/dashboard/index.html` in a browser: search, filter by category or chain, watchlist-only, sort every column, and open any row for its model breakdown and farm plan.
+`main.ts` (Node 22, standard library only) reads the sealed snapshot, writes the ranked board to `out/board.json`, the dashboard data to `out/data.js`, and copies `dashboard/` and `screenshots/` to `out/` with `out/dossier.json`. Before writing anything it runs the model's self-check (recompute every row, ranks 1..n, implied value never rising down the board, watchlist coverage, farm plans, readiness range) and refuses to hand in a board that fails one. Open `out/dashboard/index.html` in a browser: search, filter by category, chain or readiness (70+/60+/50+/40+), watchlist-only, sort every column, and open any row for its model breakdown and farm plan.
+
+The board also carries a **Value / $ TVL** column — implied value per dollar of TVL, sortable like every other column — so a small protocol that scores high for its size is easy to spot next to the giants. **Download CSV** exports exactly the view on screen (the filtered, sorted board, or the live-token set) as a spreadsheet file, built in the page from the same data the table renders. The **Model self-check** panel under the model description reruns the same audit in the reader's browser and shows each check as pass or fail, so a stale or tampered data file shows up on the page instead of a table that looks fine.
 
 ## The model
 
